@@ -1,0 +1,6 @@
+inventory_id,asset_id,counterparty_code,fund_code,asset_type,currency,available_quantity,unit_collateral_value,is_cash,is_eligible,opportunity_cost,settlement_lag_days
+INV1,BONO_M_260915,DBBNP,SIEFORE 65,SECURITY,USD,1000,5.52,False,True,0.20,1
+INV2,CASH_USD_65,DBBNP,SIEFORE 65,CASH,USD,20000,1.00,True,True,1.00,0
+INV3,UDIBONO_280101,DMSPLC,SIEFORE 70,SECURITY,USD,1500,5.28,False,True,0.30,1
+INV4,CASH_USD_70,DMSPLC,SIEFORE 70,CASH,USD,15000,1.00,True,True,1.00,0
+
