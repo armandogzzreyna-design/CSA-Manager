@@ -34,8 +34,8 @@ UPLOAD_SPECS = {
 
 
 VECTOR_UPLOAD_SPECS = {
-    "deuda_076": "DEUDA.076 / DEUDA txt",
-    "derivados_077": "DERIVADOS.077 / DERIVADOS txt",
+    "deuda_076": "DEUDA.076 text file",
+    "derivados_077": "DERIVADOS.077 text file",
 }
 
 
@@ -96,7 +96,7 @@ def render_data_intake() -> None:
                 uploaded_files[key] = uploaded
 
     st.divider()
-    st.caption("Optional raw vector uploads. These are previewed only in v0.1; parsed vector pricing still uses the market prices table.")
+    st.caption("Optional raw vector text uploads. These are previewed only in v0.1; parsed vector pricing still uses the market prices table.")
     vector_files = dict(st.session_state.get("vector_files", {}))
     vector_columns = st.columns(2)
     for index, (key, label) in enumerate(VECTOR_UPLOAD_SPECS.items()):
@@ -159,10 +159,19 @@ def render_valuations() -> None:
 
 def render_optimization() -> None:
     st.subheader("Collateral Optimization")
+    st.caption("Use the counterparty amount when their collateral requirement differs from our internal valuation.")
     preserve_cash = st.toggle("Preserve cash", value=True)
+    counterparty_required_amount = st.number_input(
+        "Counterparty collateral amount to send",
+        min_value=0.0,
+        value=6000.0,
+        step=1000.0,
+        help="Operational amount requested by the counterparty. The optimization engine uses this amount for collateral allocation.",
+    )
     try:
         allocations, summary = OptimizationService(get_file_overrides()).optimize_first_margin_call(
-            preserve_cash=preserve_cash
+            preserve_cash=preserve_cash,
+            counterparty_required_amount=counterparty_required_amount,
         )
         cols = st.columns(4)
         cols[0].metric("Status", str(summary["status"]))

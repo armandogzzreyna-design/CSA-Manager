@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
@@ -214,14 +215,29 @@ class OptimizationService:
     def __init__(self, file_overrides: dict[str, Any] | None = None) -> None:
         self.file_overrides = file_overrides or {}
 
-    def optimize_first_margin_call(self, preserve_cash: bool = True) -> tuple[pd.DataFrame, dict[str, str]]:
+    def optimize_first_margin_call(
+        self,
+        preserve_cash: bool = True,
+        counterparty_required_amount: float | None = None,
+    ) -> tuple[pd.DataFrame, dict[str, str]]:
         loader = DataLoadService(self.file_overrides)
         mapper = MappingService()
         margin_calls = mapper.margin_calls_from_dataframe(loader.load_margin_calls())
         inventory = mapper.inventory_from_dataframe(loader.load_inventory())
+        margin_call = margin_calls[0]
+        if counterparty_required_amount is not None:
+            margin_call = MarginCall(
+                margin_call_id=margin_call.margin_call_id,
+                counterparty_code=margin_call.counterparty_code,
+                csa_id=margin_call.csa_id,
+                required_amount=Decimal(str(counterparty_required_amount)),
+                currency=margin_call.currency,
+                direction=margin_call.direction,
+                due_date=margin_call.due_date,
+            )
         engine = CollateralOptimizationEngine()
         result = engine.optimize_margin_call(
-            margin_call=margin_calls[0],
+            margin_call=margin_call,
             inventory=inventory,
             objective=OptimizationObjective(preserve_cash=preserve_cash),
         )
