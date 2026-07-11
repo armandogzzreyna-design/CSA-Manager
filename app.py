@@ -24,12 +24,18 @@ st.set_page_config(
 
 
 UPLOAD_SPECS = {
-    "collateral_positions": "Collateral positions CSV",
-    "market_prices": "Market prices CSV",
-    "fx_rates": "FX rates CSV",
-    "haircut_rules": "Haircut rules CSV",
-    "inventory": "Inventory CSV",
-    "margin_calls": "Margin calls CSV",
+    "collateral_positions": "Collateral positions",
+    "market_prices": "Market prices",
+    "fx_rates": "FX rates",
+    "haircut_rules": "Haircut rules",
+    "inventory": "Inventory",
+    "margin_calls": "Margin calls",
+}
+
+
+VECTOR_UPLOAD_SPECS = {
+    "deuda_076": "DEUDA.076 / DEUDA txt",
+    "derivados_077": "DERIVADOS.077 / DERIVADOS txt",
 }
 
 
@@ -38,7 +44,18 @@ def get_file_overrides() -> dict[str, object]:
 
 
 def render_table(dataframe) -> None:
-    st.dataframe(dataframe.astype(str), use_container_width=True, hide_index=True)
+    st.dataframe(dataframe.astype(str), width="stretch", hide_index=True)
+
+
+def read_vector_preview(uploaded_file: object, max_lines: int = 20):
+    uploaded_file.seek(0)
+    raw = uploaded_file.read()
+    if isinstance(raw, str):
+        text = raw
+    else:
+        text = raw.decode("latin-1", errors="replace")
+    lines = text.splitlines()
+    return [{"line_number": index + 1, "raw_line": line} for index, line in enumerate(lines[:max_lines])]
 
 
 def render_header() -> None:
@@ -62,22 +79,33 @@ def render_dashboard() -> None:
     ]
     st.dataframe(
         [{"Input": name, "Rows": rows, "Status": status} for name, rows, status in input_rows],
-        use_container_width=True,
+        width="stretch",
         hide_index=True,
     )
 
 
 def render_data_intake() -> None:
     st.subheader("Data Intake")
-    st.caption("Upload CSV files to override the bundled example data for this session.")
+    st.caption("Upload CSV or Excel files to override the bundled example data for this session.")
     uploaded_files = dict(st.session_state.get("uploaded_files", {}))
     upload_columns = st.columns(2)
     for index, (key, label) in enumerate(UPLOAD_SPECS.items()):
         with upload_columns[index % 2]:
-            uploaded = st.file_uploader(label, type=["csv"], key=f"upload_{key}")
+            uploaded = st.file_uploader(label, type=["csv", "xlsx", "xls"], key=f"upload_{key}")
             if uploaded is not None:
                 uploaded_files[key] = uploaded
+
+    st.divider()
+    st.caption("Optional raw vector uploads. These are previewed only in v0.1; parsed vector pricing still uses the market prices table.")
+    vector_files = dict(st.session_state.get("vector_files", {}))
+    vector_columns = st.columns(2)
+    for index, (key, label) in enumerate(VECTOR_UPLOAD_SPECS.items()):
+        with vector_columns[index % 2]:
+            uploaded = st.file_uploader(label, type=["076", "077", "txt", "dat"], key=f"upload_{key}")
+            if uploaded is not None:
+                vector_files[key] = uploaded
     st.session_state["uploaded_files"] = uploaded_files
+    st.session_state["vector_files"] = vector_files
 
     if uploaded_files:
         st.success(f"{len(uploaded_files)} uploaded file(s) active in this session.")
@@ -85,7 +113,15 @@ def render_data_intake() -> None:
         st.info("No uploads active. The app is using bundled example data.")
 
     loader = DataLoadService(get_file_overrides())
-    tabs = st.tabs(["Collateral Positions", "Market Prices", "FX Rates", "Haircut Rules", "Inventory", "Margin Calls"])
+    tabs = st.tabs([
+        "Collateral Positions",
+        "Market Prices",
+        "FX Rates",
+        "Haircut Rules",
+        "Inventory",
+        "Margin Calls",
+        "Raw Vectors",
+    ])
     with tabs[0]:
         render_table(loader.load_collateral_positions())
     with tabs[1]:
@@ -98,6 +134,12 @@ def render_data_intake() -> None:
         render_table(loader.load_inventory())
     with tabs[5]:
         render_table(loader.load_margin_calls())
+    with tabs[6]:
+        if not vector_files:
+            st.info("No raw vector files uploaded.")
+        for key, uploaded_file in vector_files.items():
+            st.markdown(f"**{VECTOR_UPLOAD_SPECS[key]}**")
+            st.dataframe(read_vector_preview(uploaded_file), width="stretch", hide_index=True)
 
 
 def render_valuations() -> None:
@@ -109,7 +151,7 @@ def render_valuations() -> None:
         cols[0].metric("Positions", len(results))
         cols[1].metric("Collateral Value", f"{total_value:,.2f}")
         cols[2].metric("Warnings", int(results["warnings"].astype(bool).sum()))
-        st.dataframe(results, use_container_width=True, hide_index=True)
+        st.dataframe(results, width="stretch", hide_index=True)
     except Exception as exc:
         st.error("Valuations could not be rendered.")
         st.exception(exc)
@@ -139,7 +181,7 @@ def render_optimization() -> None:
                     "explanation": "string",
                 }
             ),
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
         )
     except Exception as exc:

@@ -35,13 +35,19 @@ class TextNormalizer:
 class CSVImporter:
     required_columns: tuple[str, ...] = ()
 
-    def read_csv(self, file_path: Path | Any) -> pd.DataFrame:
+    def read_table(self, file_path: Path | Any) -> pd.DataFrame:
         if isinstance(file_path, Path) and not file_path.exists():
             raise FileNotFoundError(f"Input file not found: {file_path}")
-        df = pd.read_csv(file_path)
+        source_name = getattr(file_path, "name", str(file_path))
+        suffix = Path(source_name).suffix.lower()
+        if hasattr(file_path, "seek"):
+            file_path.seek(0)
+        if suffix in {".xlsx", ".xlsm", ".xls"}:
+            df = pd.read_excel(file_path)
+        else:
+            df = pd.read_csv(file_path)
         missing = [col for col in self.required_columns if col not in df.columns]
         if missing:
-            source_name = getattr(file_path, "name", str(file_path))
             raise ValueError(f"Missing required columns in {source_name}: {missing}")
         return df
 
@@ -58,7 +64,8 @@ class CollateralPositionImporter(CSVImporter):
     )
 
     def import_file(self, file_path: Path) -> ImportResult:
-        df = self.read_csv(file_path)
+        df = self.read_table(file_path)
+        source_name = getattr(file_path, "name", str(file_path))
         normalized = pd.DataFrame()
         normalized["position_id"] = df["position_id"].astype(str)
         normalized["counterparty_code"] = df["counterparty_code"].map(TextNormalizer.normalize)
@@ -69,7 +76,7 @@ class CollateralPositionImporter(CSVImporter):
         )
         normalized["quantity"] = df["quantity"].map(lambda x: Decimal(str(x)))
         normalized["valuation_date"] = pd.to_datetime(df["valuation_date"]).dt.date
-        normalized["source"] = file_path.name
+        normalized["source"] = source_name
         return ImportResult(normalized, str(file_path), len(normalized), [])
 
 
@@ -84,7 +91,7 @@ class MarketPriceImporter(CSVImporter):
     )
 
     def import_file(self, file_path: Path) -> ImportResult:
-        df = self.read_csv(file_path)
+        df = self.read_table(file_path)
         normalized = pd.DataFrame()
         normalized["price_id"] = df["price_id"].astype(str)
         normalized["emission_code"] = df["emission_code"].map(
@@ -105,7 +112,7 @@ class FXRateImporter(CSVImporter):
     required_columns = ("rate_date", "base_currency", "quote_currency", "rate", "source")
 
     def import_file(self, file_path: Path) -> ImportResult:
-        df = self.read_csv(file_path)
+        df = self.read_table(file_path)
         normalized = pd.DataFrame()
         normalized["rate_date"] = pd.to_datetime(df["rate_date"]).dt.date
         normalized["base_currency"] = df["base_currency"].map(TextNormalizer.normalize)
@@ -128,7 +135,7 @@ class HaircutRuleImporter(CSVImporter):
     )
 
     def import_file(self, file_path: Path) -> ImportResult:
-        df = self.read_csv(file_path)
+        df = self.read_table(file_path)
         normalized = df.copy()
         normalized["counterparty_pattern"] = normalized["counterparty_pattern"].map(TextNormalizer.normalize)
         normalized["match_type"] = normalized["match_type"].map(TextNormalizer.normalize)
@@ -160,7 +167,7 @@ class InventoryImporter(CSVImporter):
     )
 
     def import_file(self, file_path: Path) -> ImportResult:
-        df = self.read_csv(file_path)
+        df = self.read_table(file_path)
         normalized = df.copy()
         for col in ["counterparty_code", "fund_code", "asset_type", "currency"]:
             normalized[col] = normalized[col].map(TextNormalizer.normalize)
@@ -184,7 +191,7 @@ class MarginCallImporter(CSVImporter):
     )
 
     def import_file(self, file_path: Path) -> ImportResult:
-        df = self.read_csv(file_path)
+        df = self.read_table(file_path)
         normalized = df.copy()
         normalized["counterparty_code"] = normalized["counterparty_code"].map(TextNormalizer.normalize)
         normalized["currency"] = normalized["currency"].map(TextNormalizer.normalize)
