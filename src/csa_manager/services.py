@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import asdict
-from decimal import Decimal
+from pathlib import Path
+from typing import Any
 
 import pandas as pd
 
@@ -28,23 +29,45 @@ from csa_manager.valuation_engine import CollateralValuationEngine
 
 
 class DataLoadService:
+    def __init__(self, file_overrides: dict[str, Any] | None = None) -> None:
+        self.file_overrides = file_overrides or {}
+
+    def _source(self, key: str, default_path: Path) -> Path | Any:
+        uploaded_file = self.file_overrides.get(key)
+        if uploaded_file is not None:
+            uploaded_file.seek(0)
+            return uploaded_file
+        return default_path
+
     def load_collateral_positions(self) -> pd.DataFrame:
-        return CollateralPositionImporter().import_file(settings.COLLATERAL_POSITIONS_FILE).dataframe
+        return CollateralPositionImporter().import_file(
+            self._source("collateral_positions", settings.COLLATERAL_POSITIONS_FILE)
+        ).dataframe
 
     def load_market_prices(self) -> pd.DataFrame:
-        return MarketPriceImporter().import_file(settings.MARKET_PRICES_FILE).dataframe
+        return MarketPriceImporter().import_file(
+            self._source("market_prices", settings.MARKET_PRICES_FILE)
+        ).dataframe
 
     def load_fx_rates(self) -> pd.DataFrame:
-        return FXRateImporter().import_file(settings.FX_RATES_FILE).dataframe
+        return FXRateImporter().import_file(
+            self._source("fx_rates", settings.FX_RATES_FILE)
+        ).dataframe
 
     def load_haircut_rules(self) -> pd.DataFrame:
-        return HaircutRuleImporter().import_file(settings.HAIRCUT_RULES_FILE).dataframe
+        return HaircutRuleImporter().import_file(
+            self._source("haircut_rules", settings.HAIRCUT_RULES_FILE)
+        ).dataframe
 
     def load_inventory(self) -> pd.DataFrame:
-        return InventoryImporter().import_file(settings.INVENTORY_FILE).dataframe
+        return InventoryImporter().import_file(
+            self._source("inventory", settings.INVENTORY_FILE)
+        ).dataframe
 
     def load_margin_calls(self) -> pd.DataFrame:
-        return MarginCallImporter().import_file(settings.MARGIN_CALLS_FILE).dataframe
+        return MarginCallImporter().import_file(
+            self._source("margin_calls", settings.MARGIN_CALLS_FILE)
+        ).dataframe
 
 
 class MappingService:
@@ -147,6 +170,9 @@ class MappingService:
 
 
 class ValuationService:
+    def __init__(self, file_overrides: dict[str, Any] | None = None) -> None:
+        self.file_overrides = file_overrides or {}
+
     @staticmethod
     def _display_number(value: object) -> float | None:
         if pd.isna(value):
@@ -154,7 +180,7 @@ class ValuationService:
         return float(value)
 
     def run_collateral_valuation(self) -> pd.DataFrame:
-        loader = DataLoadService()
+        loader = DataLoadService(self.file_overrides)
         mapper = MappingService()
         positions = mapper.positions_from_dataframe(loader.load_collateral_positions())
         prices = mapper.prices_from_dataframe(loader.load_market_prices())
@@ -185,8 +211,11 @@ class ValuationService:
 
 
 class OptimizationService:
+    def __init__(self, file_overrides: dict[str, Any] | None = None) -> None:
+        self.file_overrides = file_overrides or {}
+
     def optimize_first_margin_call(self, preserve_cash: bool = True) -> tuple[pd.DataFrame, dict[str, str]]:
-        loader = DataLoadService()
+        loader = DataLoadService(self.file_overrides)
         mapper = MappingService()
         margin_calls = mapper.margin_calls_from_dataframe(loader.load_margin_calls())
         inventory = mapper.inventory_from_dataframe(loader.load_inventory())

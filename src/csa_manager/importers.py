@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import unicodedata
 from dataclasses import dataclass
-from datetime import date
 from decimal import Decimal
 from pathlib import Path
+from typing import Any
 
 import pandas as pd
 
@@ -35,13 +35,14 @@ class TextNormalizer:
 class CSVImporter:
     required_columns: tuple[str, ...] = ()
 
-    def read_csv(self, file_path: Path) -> pd.DataFrame:
-        if not file_path.exists():
+    def read_csv(self, file_path: Path | Any) -> pd.DataFrame:
+        if isinstance(file_path, Path) and not file_path.exists():
             raise FileNotFoundError(f"Input file not found: {file_path}")
         df = pd.read_csv(file_path)
         missing = [col for col in self.required_columns if col not in df.columns]
         if missing:
-            raise ValueError(f"Missing required columns in {file_path.name}: {missing}")
+            source_name = getattr(file_path, "name", str(file_path))
+            raise ValueError(f"Missing required columns in {source_name}: {missing}")
         return df
 
 

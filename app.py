@@ -23,6 +23,24 @@ st.set_page_config(
 )
 
 
+UPLOAD_SPECS = {
+    "collateral_positions": "Collateral positions CSV",
+    "market_prices": "Market prices CSV",
+    "fx_rates": "FX rates CSV",
+    "haircut_rules": "Haircut rules CSV",
+    "inventory": "Inventory CSV",
+    "margin_calls": "Margin calls CSV",
+}
+
+
+def get_file_overrides() -> dict[str, object]:
+    return st.session_state.get("uploaded_files", {})
+
+
+def render_table(dataframe) -> None:
+    st.dataframe(dataframe.astype(str), use_container_width=True, hide_index=True)
+
+
 def render_header() -> None:
     cols = st.columns([2, 2, 2, 2])
     cols[0].metric("Business Date", settings.DEFAULT_BUSINESS_DATE)
@@ -33,7 +51,7 @@ def render_header() -> None:
 
 def render_dashboard() -> None:
     st.subheader("Daily Process Dashboard")
-    loader = DataLoadService()
+    loader = DataLoadService(get_file_overrides())
     input_rows = [
         ("Collateral Positions", len(loader.load_collateral_positions()), "Loaded"),
         ("Market Prices", len(loader.load_market_prices()), "Loaded"),
@@ -51,38 +69,59 @@ def render_dashboard() -> None:
 
 def render_data_intake() -> None:
     st.subheader("Data Intake")
-    loader = DataLoadService()
+    st.caption("Upload CSV files to override the bundled example data for this session.")
+    uploaded_files = dict(st.session_state.get("uploaded_files", {}))
+    upload_columns = st.columns(2)
+    for index, (key, label) in enumerate(UPLOAD_SPECS.items()):
+        with upload_columns[index % 2]:
+            uploaded = st.file_uploader(label, type=["csv"], key=f"upload_{key}")
+            if uploaded is not None:
+                uploaded_files[key] = uploaded
+    st.session_state["uploaded_files"] = uploaded_files
+
+    if uploaded_files:
+        st.success(f"{len(uploaded_files)} uploaded file(s) active in this session.")
+    else:
+        st.info("No uploads active. The app is using bundled example data.")
+
+    loader = DataLoadService(get_file_overrides())
     tabs = st.tabs(["Collateral Positions", "Market Prices", "FX Rates", "Haircut Rules", "Inventory", "Margin Calls"])
     with tabs[0]:
-        st.dataframe(loader.load_collateral_positions(), use_container_width=True, hide_index=True)
+        render_table(loader.load_collateral_positions())
     with tabs[1]:
-        st.dataframe(loader.load_market_prices(), use_container_width=True, hide_index=True)
+        render_table(loader.load_market_prices())
     with tabs[2]:
-        st.dataframe(loader.load_fx_rates(), use_container_width=True, hide_index=True)
+        render_table(loader.load_fx_rates())
     with tabs[3]:
-        st.dataframe(loader.load_haircut_rules(), use_container_width=True, hide_index=True)
+        render_table(loader.load_haircut_rules())
     with tabs[4]:
-        st.dataframe(loader.load_inventory(), use_container_width=True, hide_index=True)
+        render_table(loader.load_inventory())
     with tabs[5]:
-        st.dataframe(loader.load_margin_calls(), use_container_width=True, hide_index=True)
+        render_table(loader.load_margin_calls())
 
 
 def render_valuations() -> None:
     st.subheader("Valuations")
-    results = ValuationService().run_collateral_valuation()
-    total_value = results["collateral_value"].dropna().sum()
-    cols = st.columns(3)
-    cols[0].metric("Positions", len(results))
-    cols[1].metric("Collateral Value", f"{total_value:,.2f}")
-    cols[2].metric("Warnings", int(results["warnings"].astype(bool).sum()))
-    st.dataframe(results, use_container_width=True, hide_index=True)
+    try:
+        results = ValuationService(get_file_overrides()).run_collateral_valuation()
+        total_value = results["collateral_value"].dropna().sum()
+        cols = st.columns(3)
+        cols[0].metric("Positions", len(results))
+        cols[1].metric("Collateral Value", f"{total_value:,.2f}")
+        cols[2].metric("Warnings", int(results["warnings"].astype(bool).sum()))
+        st.dataframe(results, use_container_width=True, hide_index=True)
+    except Exception as exc:
+        st.error("Valuations could not be rendered.")
+        st.exception(exc)
 
 
 def render_optimization() -> None:
     st.subheader("Collateral Optimization")
     preserve_cash = st.toggle("Preserve cash", value=True)
     try:
-        allocations, summary = OptimizationService().optimize_first_margin_call(preserve_cash=preserve_cash)
+        allocations, summary = OptimizationService(get_file_overrides()).optimize_first_margin_call(
+            preserve_cash=preserve_cash
+        )
         cols = st.columns(4)
         cols[0].metric("Status", str(summary["status"]))
         cols[1].metric("Required", str(summary["required_amount"]))
