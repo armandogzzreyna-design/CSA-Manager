@@ -81,15 +81,31 @@ def render_valuations() -> None:
 def render_optimization() -> None:
     st.subheader("Collateral Optimization")
     preserve_cash = st.toggle("Preserve cash", value=True)
-    allocations, summary = OptimizationService().optimize_first_margin_call(preserve_cash=preserve_cash)
-    cols = st.columns(4)
-    cols[0].metric("Status", summary["status"])
-    cols[1].metric("Required", summary["required_amount"])
-    cols[2].metric("Covered", summary["covered_amount"])
-    cols[3].metric("Excess", summary["overcollateralization"])
-    if summary["warnings"]:
-        st.warning(summary["warnings"])
-    st.dataframe(allocations, use_container_width=True, hide_index=True)
+    try:
+        allocations, summary = OptimizationService().optimize_first_margin_call(preserve_cash=preserve_cash)
+        cols = st.columns(4)
+        cols[0].metric("Status", str(summary["status"]))
+        cols[1].metric("Required", str(summary["required_amount"]))
+        cols[2].metric("Covered", str(summary["covered_amount"]))
+        cols[3].metric("Excess", str(summary["overcollateralization"]))
+        if summary["warnings"]:
+            st.warning(summary["warnings"])
+        st.dataframe(
+            allocations.astype(
+                {
+                    "inventory_id": "string",
+                    "asset_id": "string",
+                    "fund_code": "string",
+                    "currency": "string",
+                    "explanation": "string",
+                }
+            ),
+            use_container_width=True,
+            hide_index=True,
+        )
+    except Exception as exc:
+        st.error("Collateral optimization could not be rendered.")
+        st.exception(exc)
 
 
 def main() -> None:
