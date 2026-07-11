@@ -147,6 +147,12 @@ class MappingService:
 
 
 class ValuationService:
+    @staticmethod
+    def _display_number(value: object) -> float | None:
+        if pd.isna(value):
+            return None
+        return float(value)
+
     def run_collateral_valuation(self) -> pd.DataFrame:
         loader = DataLoadService()
         mapper = MappingService()
@@ -163,13 +169,13 @@ class ValuationService:
                     "counterparty_code": result.counterparty_code,
                     "fund_code": result.fund_code,
                     "instrument_code": result.instrument_code,
-                    "quantity": result.quantity,
-                    "dirty_price": result.dirty_price,
-                    "price_usd": result.price_usd,
+                    "quantity": self._display_number(result.quantity),
+                    "dirty_price": self._display_number(result.dirty_price),
+                    "price_usd": self._display_number(result.price_usd),
                     "days_to_maturity": result.days_to_maturity,
-                    "haircut_factor": result.haircut_factor,
-                    "haircut_price": result.haircut_price,
-                    "collateral_value": result.collateral_value,
+                    "haircut_factor": self._display_number(result.haircut_factor),
+                    "haircut_price": self._display_number(result.haircut_price),
+                    "collateral_value": self._display_number(result.collateral_value),
                     "status": result.status,
                     "warnings": "; ".join(result.warnings),
                 }
@@ -191,6 +197,9 @@ class OptimizationService:
             objective=OptimizationObjective(preserve_cash=preserve_cash),
         )
         allocations = pd.DataFrame([asdict(allocation) for allocation in result.allocations])
+        for column in ["quantity", "collateral_value"]:
+            if column in allocations.columns:
+                allocations[column] = allocations[column].astype(float)
         summary = {
             "status": result.status,
             "required_amount": str(result.required_amount),
@@ -199,4 +208,3 @@ class OptimizationService:
             "warnings": "; ".join(result.warnings),
         }
         return allocations, summary
-

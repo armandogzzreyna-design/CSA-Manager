@@ -18,7 +18,6 @@ from csa_manager.services import DataLoadService, OptimizationService, Valuation
 
 st.set_page_config(
     page_title="CSA Manager",
-    page_icon="",
     layout="wide",
     initial_sidebar_state="expanded",
 )
@@ -112,4 +111,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
