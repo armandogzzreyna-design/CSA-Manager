@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import re
 import sys
+from numbers import Number
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 from typing import Any
 
 import requests
-from nicegui import events, ui
+from nicegui import events, run as nicegui_run, ui
 
 ROOT = Path(__file__).resolve().parent
 SRC = ROOT / "src"
@@ -17,7 +18,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from config import settings
-from csa_manager.services import DataLoadService, OptimizationService, ReportingService
+from csa_manager.services import DataLoadService, OperationalAnalyticsService, OptimizationService, ReportingService
 
 
 FILES = {
@@ -66,15 +67,70 @@ FILES = {
 }
 
 session_files: dict[str, Path] = {}
+session_file_meta: dict[str, dict[str, str]] = {}
 fix_value: float | None = None
+
+
+def configure_nicegui_runtime() -> None:
+    original_setup = nicegui_run.setup
+
+    def safe_setup() -> None:
+        try:
+            original_setup()
+        except PermissionError:
+            nicegui_run.process_pool = None
+
+    nicegui_run.setup = safe_setup
 
 
 def save_upload(event: events.UploadEventArguments, key: str) -> None:
     suffix = Path(event.name).suffix
+    content = event.content.read()
     with NamedTemporaryFile(delete=False, suffix=suffix) as temp_file:
-        temp_file.write(event.content.read())
+        temp_file.write(content)
         session_files[key] = Path(temp_file.name)
-    ui.notify(f"{event.name} cargado", type="positive")
+    session_file_meta[key] = {
+        "archivo": FILES[key]["label"],
+        "nombre": event.name,
+        "tamano": f"{len(content):,} bytes",
+        "estado": "Cargado",
+    }
+    ui.notify(f"{event.name} cargado. Presiona Procesar archivos o revisa Resumen.", type="positive")
+    try:
+        carga_archivos.refresh()
+        resumen_operativo.refresh()
+    except Exception:
+        pass
+
+
+def register_local_file(key: str, path: Path) -> None:
+    if not path.exists():
+        ui.notify(f"No existe: {path}", type="warning")
+        return
+    session_files[key] = path
+    session_file_meta[key] = {
+        "archivo": FILES[key]["label"],
+        "nombre": path.name,
+        "tamano": f"{path.stat().st_size:,} bytes",
+        "estado": "Cargado desde Downloads",
+    }
+
+
+def load_downloads_example_files() -> None:
+    downloads = Path.home() / "Downloads"
+    candidates = {
+        "validaciones_otc": downloads / "Validaciones OTC CSA 10.07.2026.xlsx",
+        "posicion_otc": downloads / "POSICION_OTC.xlsx",
+        "posicion_bnp_gs_ms": downloads / "POSICION_BNP_GS_MS.xlsx",
+        "posicion_bbva": downloads / "POSICION_BBVA.xlsx",
+        "movimientos_otc": downloads / "Movimientos_OTC.xlsx",
+        "movimientos_cash": downloads / "Movimientos_CASH.xlsx",
+        "deuda_076": downloads / "20260709.076",
+        "derivados_077": downloads / "20260709.077",
+    }
+    for key, path in candidates.items():
+        register_local_file(key, path)
+    refresh_views()
 
 
 def fetch_banxico_fix() -> float:
@@ -87,7 +143,32 @@ def fetch_banxico_fix() -> float:
 
 
 def rows(dataframe) -> list[dict[str, Any]]:
-    return dataframe.astype(str).to_dict(orient="records")
+    def fmt(value: object, pattern: str) -> str:
+        if value is None:
+            return ""
+        if isinstance(value, Number):
+            try:
+                if value != value:
+                    return ""
+                return pattern.format(float(value))
+            except Exception:
+                return str(value)
+        return str(value)
+
+    formatted = dataframe.copy()
+    for column in formatted.columns:
+        upper = str(column).upper()
+        if not hasattr(formatted[column], "dtype"):
+            continue
+        if "PRECIO" in upper or "HAIRCUT" in upper or "FIX" in upper:
+            formatted[column] = formatted[column].map(lambda value: fmt(value, "{:,.6f}"))
+        elif any(token in upper for token in ["VALUACION", "MONTO", "CASH", "COLATERAL", "FALTANTE", "EXCESO"]):
+            formatted[column] = formatted[column].map(lambda value: fmt(value, "{:,.2f}"))
+        elif any(token in upper for token in ["TITULOS", "NOCIONAL", "DIAS"]):
+            formatted[column] = formatted[column].map(lambda value: fmt(value, "{:,.0f}"))
+        else:
+            formatted[column] = formatted[column].astype(str)
+    return formatted.to_dict(orient="records")
 
 
 def columns(dataframe) -> list[dict[str, str]]:
@@ -96,6 +177,26 @@ def columns(dataframe) -> list[dict[str, str]]:
 
 def table(dataframe, rows_per_page: int = 12) -> None:
     ui.table(columns=columns(dataframe), rows=rows(dataframe), pagination=rows_per_page).classes("w-full")
+
+
+def valuation_table(dataframe, rows_per_page: int = 20) -> None:
+    display = dataframe.copy()
+    display["SEMAFORO_COLOR"] = display["SEMAFORO"].map({"ROJO": "red", "VERDE": "green"}).fillna("grey")
+    table_columns = [
+        {"name": column, "label": column, "field": column, "align": "left"}
+        for column in display.columns
+        if column != "SEMAFORO_COLOR"
+    ]
+    valuation_rows = rows(display)
+    component = ui.table(columns=table_columns, rows=valuation_rows, pagination=rows_per_page).classes("w-full")
+    component.add_slot(
+        "body-cell-SEMAFORO",
+        """
+        <q-td :props="props">
+          <q-badge :color="props.row.SEMAFORO_COLOR" :label="props.value" />
+        </q-td>
+        """,
+    )
 
 
 def metric(label: str, value: str) -> None:
@@ -117,12 +218,18 @@ def read_raw_preview(path: Path, limit: int = 20) -> list[dict[str, str]]:
 
 
 def refresh_views() -> None:
-    for view in [carga_archivos, resumen_operativo, valuaciones, vectores, optimizacion, exportar]:
+    for view in [carga_archivos, resumen_operativo, valuaciones, optimizacion, exportar]:
         try:
             view.refresh()
         except Exception:
             pass
     ui.notify("Archivos procesados. Las vistas fueron actualizadas.", type="positive")
+
+
+def render_error(context: str, exc: Exception) -> None:
+    with ui.card().classes("w-full p-4 bg-red-50 border border-red-200"):
+        ui.label(f"No se pudo renderizar {context}.").classes("font-semibold text-red-800")
+        ui.label(str(exc)).classes("text-red-700")
 
 
 def page_shell() -> None:
@@ -161,7 +268,12 @@ def upload_card(key: str, spec: dict[str, Any]) -> None:
 def carga_archivos() -> None:
     ui.label("Carga de archivos").classes("text-2xl font-semibold text-slate-900")
     ui.label("Carga únicamente los archivos del proceso OTC. Si no hubo movimientos, simplemente no subas ese archivo.").classes("text-slate-600")
-    ui.label("Después de subir archivos, presiona Procesar archivos para actualizar las pestañas de Resumen, Valuaciones y Vectores.").classes("text-slate-500")
+    ui.label("Después de subir archivos, presiona Procesar archivos para actualizar Resumen, Valuaciones y Optimización.").classes("text-slate-500")
+
+    with ui.card().classes("w-full p-4 bg-amber-50 border border-amber-200 shadow-sm"):
+        ui.label("Modo local de prueba").classes("font-semibold text-amber-900")
+        ui.label("Si el upload del navegador no carga, usa este botón para leer directamente los archivos desde tu carpeta Downloads.").classes("text-amber-800")
+        ui.button("Cargar archivos desde Downloads", on_click=load_downloads_example_files).props("color=warning icon=folder_open")
 
     with ui.grid(columns=2).classes("w-full gap-4"):
         for key, spec in FILES.items():
@@ -169,7 +281,22 @@ def carga_archivos() -> None:
 
     with ui.row().classes("gap-2"):
         ui.button("Procesar archivos", on_click=refresh_views).props("color=primary icon=sync")
-        ui.button("Limpiar sesión", on_click=lambda: (session_files.clear(), refresh_views())).props("outline icon=delete")
+        ui.button("Limpiar sesión", on_click=lambda: (session_files.clear(), session_file_meta.clear(), refresh_views())).props("outline icon=delete")
+
+    ui.label("Archivos recibidos").classes("text-lg font-semibold")
+    if session_file_meta:
+        ui.table(
+            columns=[
+                {"name": "archivo", "label": "Tipo", "field": "archivo", "align": "left"},
+                {"name": "nombre", "label": "Nombre recibido", "field": "nombre", "align": "left"},
+                {"name": "tamano", "label": "Tamaño", "field": "tamano", "align": "left"},
+                {"name": "estado", "label": "Estado", "field": "estado", "align": "left"},
+            ],
+            rows=list(session_file_meta.values()),
+            pagination=20,
+        ).classes("w-full")
+    else:
+        ui.label("Aún no hay archivos recibidos en esta sesión.").classes("text-slate-500")
 
     ui.separator()
     ui.label("Tipo de cambio FIX").classes("text-lg font-semibold")
@@ -198,8 +325,12 @@ def carga_archivos() -> None:
 
 @ui.refreshable
 def resumen_operativo() -> None:
-    loader = DataLoadService(session_files)
-    sheets = ReportingService(session_files).workbook_preview()
+    try:
+        loader = DataLoadService(session_files)
+        sheets = ReportingService(session_files).workbook_preview()
+    except Exception as exc:
+        render_error("Resumen", exc)
+        return
 
     ui.label("Resumen operativo").classes("text-2xl font-semibold text-slate-900")
     with ui.row().classes("gap-4"):
@@ -244,38 +375,56 @@ def resumen_operativo() -> None:
 @ui.refreshable
 def valuaciones() -> None:
     ui.label("Valuaciones y llamadas").classes("text-2xl font-semibold text-slate-900")
-    sheets = ReportingService(session_files).workbook_preview()
+    try:
+        sheets = ReportingService(session_files).workbook_preview()
+        analytics = OperationalAnalyticsService(session_files)
+    except Exception as exc:
+        render_error("Valuaciones", exc)
+        return
     if sheets:
-        ui.label("Mostrando el workbook operativo cargado. Esta vista replica las hojas que usan en el proceso actual.").classes("text-slate-600")
-        for sheet_name in ["VALUACION", "TOTALES", "POSICIONES", "CASH", "COLATERALES"]:
-            if sheet_name in sheets:
-                with ui.expansion(sheet_name, icon="table_chart", value=sheet_name == "VALUACION").classes("w-full"):
-                    table(sheets[sheet_name], rows_per_page=15)
+        ui.label("Resumen consolidado por contraparte y SIEFORE en USD. Rojo: monto a entregar mayor o igual a 400,000 USD. Verde: menor al umbral.").classes("text-slate-600")
+        summary = analytics.valuation_summary()
+        if not summary.empty:
+            red_count = int((summary["SEMAFORO"] == "ROJO").sum())
+            green_count = int((summary["SEMAFORO"] == "VERDE").sum())
+            with ui.row().classes("gap-4"):
+                metric("Valuación OTC USD", f"{summary['VALUACION_OTC_USD'].sum():,.2f}")
+                metric("Colateral valuado USD", f"{summary['VALUACION_COLATERAL_USD'].sum():,.2f}")
+                metric("Cash neto USD", f"{summary['VALUACION_CASH_USD'].sum():,.2f}")
+                metric("Llamadas contraparte USD", f"{summary['MONTO_CONTRAPARTE_USD'].sum():,.2f}")
+                metric("Rojas", str(red_count))
+                metric("Verdes", str(green_count))
+            valuation_table(summary, rows_per_page=20)
+
+            with ui.expansion("Valuaciones por contraparte", icon="account_balance_wallet", value=True).classes("w-full"):
+                for counterparty_name, counterparty_summary in summary.groupby("CONTRAPARTE", sort=True):
+                    total_call = counterparty_summary["MONTO_CONTRAPARTE_USD"].sum()
+                    red_rows = int((counterparty_summary["SEMAFORO"] == "ROJO").sum())
+                    with ui.expansion(f"{counterparty_name} · llamadas {total_call:,.2f} USD · rojas {red_rows}", icon="business").classes("w-full"):
+                        valuation_table(counterparty_summary.reset_index(drop=True), rows_per_page=12)
+
+        with ui.expansion("Todas las posiciones OTC", icon="analytics").classes("w-full"):
+            derivative_positions = analytics.derivative_positions()
+            if derivative_positions.empty:
+                ui.label("No hay posiciones OTC cargadas.")
+            else:
+                table(derivative_positions, rows_per_page=20)
+
+        with ui.expansion("Todo el colateral valuado", icon="account_balance").classes("w-full"):
+            collateral_positions = analytics.collateral_positions()
+            if collateral_positions.empty:
+                ui.label("No hay colateral valuado cargado.")
+            else:
+                table(collateral_positions, rows_per_page=20)
+
+        with ui.expansion("Hojas originales del workbook", icon="table_chart").classes("w-full"):
+            for sheet_name in ["VALUACION", "TOTALES", "POSICIONES", "CASH", "COLATERALES"]:
+                if sheet_name in sheets:
+                    with ui.expansion(sheet_name, icon="table_chart", value=sheet_name == "VALUACION").classes("w-full"):
+                        table(sheets[sheet_name], rows_per_page=15)
         return
 
     ui.label("Sube Validaciones OTC CSA para ver las valuaciones y llamadas con el layout operativo.").classes("text-orange-700")
-
-
-@ui.refreshable
-def vectores() -> None:
-    ui.label("Vectores TXT").classes("text-2xl font-semibold text-slate-900")
-    ui.label("Vista previa de archivos .076 y .077. Por ahora no se guarda histórico y solo se muestran primeras líneas.").classes("text-slate-600")
-
-    loaded_any = False
-    for key in ["deuda_076", "derivados_077"]:
-        if key in session_files:
-            loaded_any = True
-            with ui.expansion(FILES[key]["label"], icon="description", value=True).classes("w-full"):
-                ui.table(
-                    columns=[
-                        {"name": "linea", "label": "Línea", "field": "linea", "align": "left"},
-                        {"name": "texto", "label": "Texto", "field": "texto", "align": "left"},
-                    ],
-                    rows=read_raw_preview(session_files[key]),
-                    pagination=20,
-                ).classes("w-full")
-    if not loaded_any:
-        ui.label("No hay vectores cargados.").classes("text-slate-600")
 
 
 @ui.refreshable
@@ -295,25 +444,66 @@ def optimizacion() -> None:
         ).classes("text-sm text-slate-700")
 
     preserve_cash = ui.switch("Preservar efectivo", value=True)
-    amount = ui.number("Monto solicitado por contraparte", value=6000.0, min=0.0, step=1000.0).classes("w-80")
+    analytics = OperationalAnalyticsService(session_files)
+    summary = analytics.valuation_summary()
+    scenario_options: dict[str, dict[str, Any]] = {}
+    if not summary.empty:
+        for row in summary.itertuples(index=False):
+            call_amount = float(row.MONTO_CONTRAPARTE_USD)
+            status = "con llamada" if call_amount > 0 else "sin llamada"
+            label = f"{row.CONTRAPARTE} | {row.SIEFORE} | {call_amount:,.2f} USD | {status}"
+            scenario_options[label] = {
+                "counterparty": row.CONTRAPARTE,
+                "fund": row.SIEFORE,
+                "amount": call_amount,
+            }
+
+    selected_scenario = ui.select(list(scenario_options.keys()), label="Contraparte / SIEFORE").classes("w-96")
+    counterparty = ui.input("Contraparte", value="GOLDMAN").classes("w-80")
+    fund = ui.input("SIEFORE", value="INVER70").classes("w-80")
+    amount = ui.number("Monto solicitado por contraparte USD", value=6000.0, min=0.0, step=1000.0).classes("w-80")
+    action = ui.select(["Enviar colateral", "Sustituir colateral"], value="Enviar colateral", label="Acción").classes("w-80")
     result_area = ui.column().classes("w-full")
+
+    def apply_selected_scenario() -> None:
+        selected = scenario_options.get(selected_scenario.value)
+        if not selected:
+            ui.notify("Selecciona una contraparte/SIEFORE primero.", type="warning")
+            return
+        counterparty.value = selected["counterparty"]
+        fund.value = selected["fund"]
+        amount.value = selected["amount"]
+        ui.notify("Escenario aplicado al formulario.", type="positive")
+
+    if scenario_options:
+        ui.button("Usar selección", on_click=apply_selected_scenario).props("outline icon=check")
+    else:
+        ui.label("No se detectaron valuaciones consolidadas. Puedes capturar contraparte, SIEFORE y monto manualmente.").classes("text-orange-700")
 
     def run() -> None:
         result_area.clear()
         try:
-            allocations, summary = OptimizationService(session_files).optimize_first_margin_call(
+            recommendation = analytics.collateral_recommendation(
+                counterparty=str(counterparty.value or "").upper(),
+                fund=str(fund.value or "").upper(),
+                amount=float(amount.value or 0),
                 preserve_cash=bool(preserve_cash.value),
-                counterparty_required_amount=float(amount.value or 0),
             )
             with result_area:
+                ui.label(f"Acción: {action.value}").classes("font-semibold")
+                if action.value == "Sustituir colateral":
+                    ui.label("Modo sustitución: por ahora se calcula el colateral de reemplazo sugerido. Después agregaremos selección del colateral que quieres retirar y workflow de aprobación.").classes("text-slate-600")
+                if recommendation.empty:
+                    ui.label("No hay colateral disponible para esa contraparte/SIEFORE en TOTALES.").classes("text-orange-700")
+                    return
+                covered = recommendation["VALUACION_CUBIERTA_USD"].sum()
+                missing = recommendation["FALTANTE_USD"].max()
                 with ui.row().classes("gap-4"):
-                    metric("Estado", summary["status"])
-                    metric("Requerido", summary["required_amount"])
-                    metric("Cubierto", summary["covered_amount"])
-                    metric("Exceso", summary["overcollateralization"])
-                if summary["warnings"]:
-                    ui.label(summary["warnings"]).classes("text-orange-700")
-                table(allocations)
+                    metric("Monto solicitado USD", f"{float(amount.value or 0):,.2f}")
+                    metric("Cubierto sugerido USD", f"{covered:,.2f}")
+                    metric("Faltante USD", f"{missing:,.2f}")
+                    metric("Instrumentos", str(len(recommendation)))
+                table(recommendation)
         except Exception as exc:
             with result_area:
                 ui.label("No se pudo optimizar con los datos actuales.").classes("text-red-700")
@@ -344,7 +534,6 @@ def index() -> None:
             tab_carga = ui.tab("Carga")
             tab_resumen = ui.tab("Resumen")
             tab_valuaciones = ui.tab("Valuaciones")
-            tab_vectores = ui.tab("Vectores")
             tab_optimizacion = ui.tab("Optimización")
             tab_exportar = ui.tab("Exportar")
 
@@ -355,8 +544,6 @@ def index() -> None:
                 resumen_operativo()
             with ui.tab_panel(tab_valuaciones).classes("gap-4"):
                 valuaciones()
-            with ui.tab_panel(tab_vectores).classes("gap-4"):
-                vectores()
             with ui.tab_panel(tab_optimizacion).classes("gap-4"):
                 optimizacion()
             with ui.tab_panel(tab_exportar).classes("gap-4"):
@@ -364,4 +551,5 @@ def index() -> None:
 
 
 if __name__ in {"__main__", "__mp_main__"}:
-    ui.run(title="CSA Manager OTC", host="0.0.0.0", port=8080, reload=False)
+    configure_nicegui_runtime()
+    ui.run(title="CSA Manager OTC", host="127.0.0.1", port=8080, reload=False)
