@@ -449,19 +449,37 @@ def optimizacion() -> None:
     scenario_options: dict[str, dict[str, Any]] = {}
     if not summary.empty:
         for row in summary.itertuples(index=False):
-            call_amount = float(row.MONTO_CONTRAPARTE_USD)
-            status = "con llamada" if call_amount > 0 else "sin llamada"
-            label = f"{row.CONTRAPARTE} | {row.SIEFORE} | {call_amount:,.2f} USD | {status}"
+            currency = row.MONEDA_UMBRAL
+            counterparty_amount = (
+                float(row.MONTO_CONTRAPARTE_MXN) if currency == "MXN" else float(row.MONTO_CONTRAPARTE_USD)
+            )
+            internal_amount = (
+                float(row.MONTO_A_ENTREGAR_INTERNO_MXN)
+                if currency == "MXN"
+                else float(row.MONTO_A_ENTREGAR_INTERNO_USD)
+            )
+            scenario_amount = counterparty_amount if counterparty_amount > 0 else internal_amount
+            status = "contraparte" if counterparty_amount > 0 else "interno"
+            label = f"{row.CONTRAPARTE} | {row.SIEFORE} | {scenario_amount:,.2f} {currency} | {status}"
             scenario_options[label] = {
                 "counterparty": row.CONTRAPARTE,
                 "fund": row.SIEFORE,
-                "amount": call_amount,
+                "amount": scenario_amount,
+                "currency": currency,
             }
 
-    selected_scenario = ui.select(list(scenario_options.keys()), label="Contraparte / SIEFORE").classes("w-96")
-    counterparty = ui.input("Contraparte", value="GOLDMAN").classes("w-80")
-    fund = ui.input("SIEFORE", value="INVER70").classes("w-80")
-    amount = ui.number("Monto solicitado por contraparte USD", value=6000.0, min=0.0, step=1000.0).classes("w-80")
+    first_label = next(iter(scenario_options), None)
+    first_scenario = scenario_options.get(first_label, {"counterparty": "GOLDMAN", "fund": "INVER70", "amount": 6000.0, "currency": "USD"})
+    selected_scenario = ui.select(
+        list(scenario_options.keys()),
+        value=first_label,
+        label="Contraparte / SIEFORE",
+        on_change=lambda _: apply_selected_scenario(),
+    ).classes("w-96")
+    counterparty = ui.input("Contraparte", value=first_scenario["counterparty"]).classes("w-80")
+    fund = ui.input("SIEFORE", value=first_scenario["fund"]).classes("w-80")
+    currency = ui.input("Moneda", value=first_scenario["currency"]).props("readonly").classes("w-32")
+    amount = ui.number("Monto a optimizar", value=first_scenario["amount"], min=0.0, step=1000.0).classes("w-80")
     action = ui.select(["Enviar colateral", "Sustituir colateral"], value="Enviar colateral", label="Acción").classes("w-80")
     result_area = ui.column().classes("w-full")
 
@@ -473,6 +491,7 @@ def optimizacion() -> None:
         counterparty.value = selected["counterparty"]
         fund.value = selected["fund"]
         amount.value = selected["amount"]
+        currency.value = selected["currency"]
         ui.notify("Escenario aplicado al formulario.", type="positive")
 
     if scenario_options:
@@ -496,12 +515,13 @@ def optimizacion() -> None:
                 if recommendation.empty:
                     ui.label("No hay colateral disponible para esa contraparte/SIEFORE en TOTALES.").classes("text-orange-700")
                     return
-                covered = recommendation["VALUACION_CUBIERTA_USD"].sum()
-                missing = recommendation["FALTANTE_USD"].max()
+                covered = recommendation["VALUACION_CUBIERTA"].sum()
+                missing = recommendation["FALTANTE"].max()
+                selected_currency = str(currency.value or "USD")
                 with ui.row().classes("gap-4"):
-                    metric("Monto solicitado USD", f"{float(amount.value or 0):,.2f}")
-                    metric("Cubierto sugerido USD", f"{covered:,.2f}")
-                    metric("Faltante USD", f"{missing:,.2f}")
+                    metric(f"Monto solicitado {selected_currency}", f"{float(amount.value or 0):,.2f}")
+                    metric(f"Cubierto sugerido {selected_currency}", f"{covered:,.2f}")
+                    metric(f"Faltante {selected_currency}", f"{missing:,.2f}")
                     metric("Instrumentos", str(len(recommendation)))
                 table(recommendation)
         except Exception as exc:
