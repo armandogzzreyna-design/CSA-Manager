@@ -32,6 +32,15 @@ class TextNormalizer:
         return " ".join(text.upper().split())
 
 
+def normalize_movement_code(value: object) -> str:
+    text = TextNormalizer.normalize(value)
+    if text.startswith("CIN RETURN"):
+        return "ENVIO"
+    if text.startswith("CIN"):
+        return "RECEP"
+    return text
+
+
 class CSVImporter:
     required_columns: tuple[str, ...] = ()
 
@@ -50,6 +59,9 @@ class CSVImporter:
         if missing:
             raise ValueError(f"Missing required columns in {source_name}: {missing}")
         return df
+
+    def source_name(self, file_path: Path | Any) -> str:
+        return getattr(file_path, "name", str(file_path))
 
 
 class CollateralPositionImporter(CSVImporter):
@@ -78,6 +90,118 @@ class CollateralPositionImporter(CSVImporter):
         normalized["valuation_date"] = pd.to_datetime(df["valuation_date"]).dt.date
         normalized["source"] = source_name
         return ImportResult(normalized, str(file_path), len(normalized), [])
+
+
+class AladdinBNPGSMSPositionImporter(CSVImporter):
+    required_columns = (
+        "Tran Type",
+        "Counterparty Ticker",
+        "Portfolio",
+        "Tipo Valor (Mexico)",
+        "Titulos",
+        "CUSIP(Aladdin ID)",
+    )
+
+    def import_file(self, file_path: Path | Any) -> ImportResult:
+        df = self.read_table(file_path)
+        source_name = self.source_name(file_path)
+        df = df[df["Portfolio"].astype(str).str.contains(r"\(\d+/\d+\)", regex=True) == False]
+        normalized = pd.DataFrame()
+        normalized["position_id"] = [f"{source_name}:{index + 1}" for index in range(len(df))]
+        normalized["counterparty_code"] = df["Counterparty Ticker"].map(TextNormalizer.normalize)
+        normalized["fund_code"] = df["Portfolio"].map(TextNormalizer.normalize)
+        normalized["portfolio_code"] = normalized["fund_code"]
+        normalized["movement_code"] = df["Tran Type"].map(normalize_movement_code)
+        normalized["instrument_code"] = df["Tipo Valor (Mexico)"].map(
+            lambda x: TextNormalizer.normalize(x, replace_underscores=True)
+        )
+        normalized["quantity"] = df["Titulos"].map(lambda x: Decimal(str(x)))
+        normalized["cusip"] = df["CUSIP(Aladdin ID)"].astype(str)
+        normalized["source"] = source_name
+        return ImportResult(normalized, source_name, len(normalized), [])
+
+
+class AladdinBBVAPositionImporter(CSVImporter):
+    required_columns = (
+        "Tran Type",
+        "Counterparty Ticker",
+        "Portfolio",
+        "Tipo Valor (Mexico)",
+        "Orig. Face",
+        "CUSIP(Aladdin ID)",
+    )
+
+    def import_file(self, file_path: Path | Any) -> ImportResult:
+        df = self.read_table(file_path)
+        source_name = self.source_name(file_path)
+        df = df[df["Portfolio"].astype(str).str.contains(r"\(\d+/\d+\)", regex=True) == False]
+        normalized = pd.DataFrame()
+        normalized["position_id"] = [f"{source_name}:{index + 1}" for index in range(len(df))]
+        normalized["counterparty_code"] = df["Counterparty Ticker"].map(TextNormalizer.normalize)
+        normalized["fund_code"] = df["Portfolio"].map(TextNormalizer.normalize)
+        normalized["portfolio_code"] = normalized["fund_code"]
+        normalized["movement_code"] = df["Tran Type"].map(normalize_movement_code)
+        normalized["instrument_code"] = df["Tipo Valor (Mexico)"].map(
+            lambda x: TextNormalizer.normalize(x, replace_underscores=True)
+        )
+        normalized["quantity"] = df["Orig. Face"].map(lambda x: Decimal(str(x)))
+        normalized["cusip"] = df["CUSIP(Aladdin ID)"].astype(str)
+        normalized["source"] = source_name
+        return ImportResult(normalized, source_name, len(normalized), [])
+
+
+class AladdinOTCPositionImporter(CSVImporter):
+    required_columns = (
+        "CUSIP(Aladdin ID)",
+        "Counterparty Ticker",
+        "Portfolio",
+        "Tipo Valor (Mexico)",
+        "Notional Face (Title)",
+    )
+
+    def import_file(self, file_path: Path | Any) -> ImportResult:
+        df = self.read_table(file_path)
+        source_name = self.source_name(file_path)
+        df = df[df["Portfolio"].astype(str).str.contains(r"\(\d+/\d+\)", regex=True) == False]
+        normalized = pd.DataFrame()
+        normalized["position_id"] = [f"{source_name}:{index + 1}" for index in range(len(df))]
+        normalized["counterparty_code"] = df["Counterparty Ticker"].map(TextNormalizer.normalize)
+        normalized["fund_code"] = df["Portfolio"].map(TextNormalizer.normalize)
+        normalized["portfolio_code"] = normalized["fund_code"]
+        normalized["instrument_code"] = df["Tipo Valor (Mexico)"].map(
+            lambda x: TextNormalizer.normalize(x, replace_underscores=True)
+        )
+        normalized["notional_contracts"] = df["Notional Face (Title)"].map(lambda x: Decimal(str(x)))
+        normalized["cusip"] = df["CUSIP(Aladdin ID)"].astype(str)
+        normalized["source"] = source_name
+        return ImportResult(normalized, source_name, len(normalized), [])
+
+
+class AladdinOTCMovementImporter(CSVImporter):
+    required_columns = (
+        "Counterparty",
+        "Trade Date",
+        "Fund",
+        "IVC",
+        "Quantity",
+        "Tran Type",
+        "Td Num",
+    )
+
+    def import_file(self, file_path: Path | Any) -> ImportResult:
+        df = self.read_table(file_path)
+        source_name = self.source_name(file_path)
+        normalized = pd.DataFrame()
+        normalized["movement_id"] = df["Td Num"].astype(str)
+        normalized["counterparty_code"] = df["Counterparty"].map(TextNormalizer.normalize)
+        normalized["trade_date"] = pd.to_datetime(df["Trade Date"]).dt.date
+        normalized["fund_code"] = df["Fund"].map(TextNormalizer.normalize)
+        normalized["instrument_code"] = df["IVC"].map(lambda x: TextNormalizer.normalize(x, replace_underscores=True))
+        normalized["quantity_original"] = df["Quantity"].map(lambda x: Decimal(str(x)))
+        normalized["quantity_abs"] = normalized["quantity_original"].map(abs)
+        normalized["movement_code"] = df["Tran Type"].map(normalize_movement_code)
+        normalized["source"] = source_name
+        return ImportResult(normalized, source_name, len(normalized), [])
 
 
 class MarketPriceImporter(CSVImporter):

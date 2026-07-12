@@ -9,6 +9,10 @@ import pandas as pd
 
 from config import settings
 from csa_manager.importers import (
+    AladdinBBVAPositionImporter,
+    AladdinBNPGSMSPositionImporter,
+    AladdinOTCMovementImporter,
+    AladdinOTCPositionImporter,
     CollateralPositionImporter,
     FXRateImporter,
     HaircutRuleImporter,
@@ -69,6 +73,30 @@ class DataLoadService:
         return MarginCallImporter().import_file(
             self._source("margin_calls", settings.MARGIN_CALLS_FILE)
         ).dataframe
+
+    def load_aladdin_bnp_gs_ms_positions(self) -> pd.DataFrame | None:
+        source = self.file_overrides.get("posicion_bnp_gs_ms")
+        if source is None:
+            return None
+        return AladdinBNPGSMSPositionImporter().import_file(source).dataframe
+
+    def load_aladdin_bbva_positions(self) -> pd.DataFrame | None:
+        source = self.file_overrides.get("posicion_bbva")
+        if source is None:
+            return None
+        return AladdinBBVAPositionImporter().import_file(source).dataframe
+
+    def load_aladdin_otc_positions(self) -> pd.DataFrame | None:
+        source = self.file_overrides.get("posicion_otc")
+        if source is None:
+            return None
+        return AladdinOTCPositionImporter().import_file(source).dataframe
+
+    def load_aladdin_otc_movements(self) -> pd.DataFrame | None:
+        source = self.file_overrides.get("movimientos_otc")
+        if source is None:
+            return None
+        return AladdinOTCMovementImporter().import_file(source).dataframe
 
 
 class MappingService:
